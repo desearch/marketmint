@@ -45,21 +45,37 @@ class MarketMaker:
         """Get current orders from the strategy"""
         if not self.strategy:
             return []
-        orders = self.strategy.get_orders()
+        orders = self.strategy.get_orders(self.current_state)
         self.logger.debug("Generated orders: %s", orders)
         return orders
     
-    def get_action(self) -> float:
-        """Get trading action from the strategy"""
+    def get_action(self, state: Dict[str, Any] = None) -> float:
+        """
+        Get trading action from the strategy
+        
+        Args:
+            state: Optional market state. If not provided, uses current state.
+        
+        Returns:
+            Float representing the trading action
+        """
         if not self.strategy:
             return 0.0
-        action = self.strategy.get_action()
-        self.logger.debug("Generated action: %.2f", action)
+            
+        # Use provided state or current state
+        state_to_use = state if state is not None else self.current_state
+        if not state_to_use:
+            return 0.0
+            
+        action = self.strategy.get_action(state_to_use)
+        self.logger.debug("Generated action: %.4f", action)
         return action
     
     def set_strategy(self, strategy) -> None:
         """Set the trading strategy"""
         self.strategy = strategy
+        if strategy:
+            strategy.market_maker = self
         self.logger.info("Set strategy: %s", strategy.__class__.__name__)
         if self.current_state and self.strategy:
             self.strategy.update_market_state(self.current_state)

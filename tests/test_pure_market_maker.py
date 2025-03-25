@@ -37,13 +37,12 @@ def main():
     logger = logging.getLogger(__name__)
     
     # Initialize strategy with test parameters
-    strategy = PureMarketMaker(
-        target_spread=0.002,  # 0.2% target spread
-        min_spread=0.001,     # 0.1% minimum spread
-        max_position=1000.0,  # Larger position size for testing
-        position_limit=0.5,   # 50% of capital as position limit
-        risk_aversion=1.0     # Standard risk aversion
-    )
+    strategy = PureMarketMaker()
+    strategy.target_spread = 0.002  # 0.2% target spread
+    strategy.min_spread = 0.001     # 0.1% minimum spread
+    strategy.max_position = 1000.0  # Larger position size for testing
+    strategy.position_limit = 0.5   # 50% of capital as position limit
+    strategy.risk_aversion = 1.0    # Standard risk aversion
     
     # Wrap strategy in MarketMaker
     market_maker = MarketMaker()

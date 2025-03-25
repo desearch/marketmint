@@ -52,11 +52,6 @@ class StrategyRunner:
         if strategy_id in self.strategies:
             raise ValueError(f"Strategy {strategy_id} already exists")
         
-        # Create strategy and market maker
-        strategy = PureMarketMaker(**(strategy_params or {}))
-        market_maker = MarketMaker()
-        market_maker.set_strategy(strategy)
-        
         # Initialize empty list of agents for this strategy
         self.strategies[strategy_id] = []
         
@@ -73,39 +68,59 @@ class StrategyRunner:
         Add a new agent to a strategy.
         
         Args:
-            strategy_id: ID of the strategy to add the agent to
-            agent_id: Unique identifier for the agent
+            strategy_id: ID of the strategy
+            agent_id: ID of the agent
             governance_tokens: Number of governance tokens held
             risk_limits: Optional risk limits for the agent
         """
         if strategy_id not in self.strategies:
             raise ValueError(f"Strategy {strategy_id} not found")
-            
-        if any(agent.id == agent_id for agent in self.strategies[strategy_id]):
-            raise ValueError(f"Agent {agent_id} already exists in strategy {strategy_id}")
         
         # Create agent with strategy's market maker
-        strategy = self.strategies[strategy_id][0].strategy if self.strategies[strategy_id] else None
-        if not strategy:
-            raise ValueError(f"No agents in strategy {strategy_id}")
+        if not self.strategies[strategy_id]:
+            # Initialize strategy and market maker if none exist
+            strategy = PureMarketMaker()
+            market_maker = MarketMaker()
+            market_maker.set_strategy(strategy)  # This will also set market_maker in strategy
             
-        agent = Agent(
-            id=agent_id,
-            strategy=strategy,
-            performance_metrics={
-                'total_profit': 0.0,
-                'current_drawdown': 0.0,
-                'sharpe_ratio': 0.0,
-                'win_rate': 0.0
-            },
-            risk_limits=risk_limits or {
-                'max_position_size': self.total_capital * 0.1,  # 10% of total capital
-                'max_daily_loss': self.total_capital * 0.02,   # 2% of total capital
-                'min_profit_target': self.total_capital * self.min_profit_threshold
-            }
-        )
+            agent = Agent(
+                id=agent_id,
+                strategy=market_maker,  # Store the market maker instead of strategy
+                performance_metrics={
+                    'total_profit': 0.0,
+                    'current_drawdown': 0.0,
+                    'sharpe_ratio': 0.0,
+                    'win_rate': 0.0,
+                    'governance_tokens': governance_tokens
+                },
+                risk_limits=risk_limits or {
+                    'max_position_size': self.total_capital * 0.1,  # 10% of total capital
+                    'max_daily_loss': self.total_capital * 0.02,   # 2% of total capital
+                    'min_profit_target': self.total_capital * self.min_profit_threshold
+                }
+            )
+            self.strategies[strategy_id].append(agent)
+        else:
+            # Use existing strategy from first agent
+            market_maker = self.strategies[strategy_id][0].strategy  # Get existing market maker
+            agent = Agent(
+                id=agent_id,
+                strategy=market_maker,  # Store the market maker
+                performance_metrics={
+                    'total_profit': 0.0,
+                    'current_drawdown': 0.0,
+                    'sharpe_ratio': 0.0,
+                    'win_rate': 0.0,
+                    'governance_tokens': governance_tokens
+                },
+                risk_limits=risk_limits or {
+                    'max_position_size': self.total_capital * 0.1,  # 10% of total capital
+                    'max_daily_loss': self.total_capital * 0.02,   # 2% of total capital
+                    'min_profit_target': self.total_capital * self.min_profit_threshold
+                }
+            )
+            self.strategies[strategy_id].append(agent)
         
-        self.strategies[strategy_id].append(agent)
         self.total_governance_tokens += governance_tokens
         
         self.logger.info(
@@ -122,7 +137,7 @@ class StrategyRunner:
         """
         for agents in self.strategies.values():
             for agent in agents:
-                agent.strategy.update_market_state(state)
+                agent.strategy.update_market_state(state)  # agent.strategy is now the market maker
     
     def get_aggregated_orders(self) -> List[Dict[str, Any]]:
         """
@@ -133,8 +148,8 @@ class StrategyRunner:
         
         for strategy_id, agents in self.strategies.items():
             for agent in agents:
-                # Get orders from agent's strategy
-                orders = agent.strategy.get_orders()
+                # Get orders from agent's market maker
+                orders = agent.strategy.get_orders()  # agent.strategy is now the market maker
                 
                 # Scale order amounts by agent's governance token holdings
                 for order in orders:
@@ -154,7 +169,7 @@ class StrategyRunner:
         
         for strategy_id, agents in self.strategies.items():
             for agent in agents:
-                action = agent.strategy.get_action()
+                action = agent.strategy.get_action()  # agent.strategy is now the market maker
                 weight = agent.performance_metrics['governance_tokens'] / self.total_governance_tokens
                 
                 self.logger.debug(
