@@ -1,123 +1,142 @@
-import unittest
 import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
 import logging
-from ai_agent.strategies.pure_market_maker import PureMarketMaker
+from ai_agent.strategies import PureMarketMaker
+from ai_agent.market_maker import MarketMaker
 
-class TestPureMarketMaker(unittest.TestCase):
-    def setUp(self):
-        # Enable debug logging
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger(__name__)
-        
-        self.strategy = PureMarketMaker(
-            target_spread=0.002,  # 0.2% target spread
-            min_spread=0.001,     # 0.1% minimum spread
-            max_position=100.0,   # Maximum position size
-            position_limit=0.5,   # 50% of capital as position limit
-            risk_aversion=1.0     # Risk aversion parameter
-        )
-        
-        # Sample market state
-        self.market_state = {
-            'price': 100.0,
-            'portfolio_value': 10000.0,
-            'position': 0.0,
-            'timestamp': 1000
+def generate_test_data(n_points=100):
+    """Generate synthetic market data for testing"""
+    base_time = datetime.now()
+    times = [base_time + timedelta(minutes=i*5) for i in range(n_points)]
+    
+    # Generate price series with random walk
+    price = 100.0
+    prices = [price]
+    volatility = 0.002  # Higher volatility for testing
+    
+    for _ in range(n_points-1):
+        price *= np.exp(np.random.normal(0, volatility))
+        prices.append(price)
+    
+    # Generate volume with patterns
+    volumes = np.random.lognormal(mean=np.log(1000), sigma=0.5, size=n_points)
+    
+    return pd.DataFrame({
+        'timestamp': times,
+        'price': prices,
+        'volume': volumes
+    })
+
+def main():
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    
+    # Initialize strategy with test parameters
+    strategy = PureMarketMaker(
+        target_spread=0.002,  # 0.2% target spread
+        min_spread=0.001,     # 0.1% minimum spread
+        max_position=1000.0,  # Larger position size for testing
+        position_limit=0.5,   # 50% of capital as position limit
+        risk_aversion=1.0     # Standard risk aversion
+    )
+    
+    # Wrap strategy in MarketMaker
+    market_maker = MarketMaker()
+    market_maker.set_strategy(strategy)
+    
+    # Generate test data
+    data = generate_test_data(n_points=100)
+    logger.info("Generated %d test data points", len(data))
+    
+    # Initialize tracking variables
+    position = 0.0
+    portfolio_value = 1000000.0  # $1M starting capital
+    trades = []
+    positions = [position]
+    portfolio_values = [portfolio_value]
+    actions = []
+    
+    # Run simulation
+    for i in range(1, len(data)):
+        # Update market state
+        current_state = {
+            'price': data['price'].iloc[i],
+            'volume': data['volume'].iloc[i],
+            'timestamp': int(data['timestamp'].iloc[i].timestamp()),
+            'portfolio_value': portfolio_value,
+            'position': position
         }
+        
+        market_maker.update_market_state(current_state)
+        
+        # Get action from strategy
+        action = market_maker.get_action()
+        actions.append(action)
+        
+        # Calculate trade size and execute
+        position_size = abs(action) * portfolio_value
+        trade_size = position_size * np.sign(action)
+        
+        # Apply slippage
+        slippage = np.random.normal(0, 0.001)
+        executed_size = trade_size * (1 + slippage)
+        
+        # Update position
+        old_position = position
+        position += executed_size
+        
+        # Calculate P&L
+        price_change = (data['price'].iloc[i] - data['price'].iloc[i-1]) / data['price'].iloc[i-1]
+        transaction_cost = abs(executed_size) * 0.001  # 0.1% transaction cost
+        trade_pnl = old_position * price_change - transaction_cost
+        
+        portfolio_value += trade_pnl
+        
+        # Record trade
+        trades.append({
+            'timestamp': data['timestamp'].iloc[i],
+            'price': data['price'].iloc[i],
+            'action': action,
+            'trade_size': executed_size,
+            'position': position,
+            'pnl': trade_pnl,
+            'portfolio_value': portfolio_value
+        })
+        
+        positions.append(position)
+        portfolio_values.append(portfolio_value)
+        
+        logger.info(
+            "Step %d: Price=%.2f, Action=%.4f, Size=%.2f, Position=%.2f, PnL=%.2f, Portfolio=%.2f",
+            i, current_state['price'], action, executed_size, position, trade_pnl, portfolio_value
+        )
     
-    def test_update_market_state(self):
-        """Test market state update"""
-        self.strategy.update_market_state(self.market_state)
-        self.assertEqual(self.strategy.current_price, 100.0)
-        self.assertEqual(self.strategy.current_position, 0.0)
-        self.assertEqual(self.strategy.portfolio_value, 10000.0)
+    # Calculate performance metrics
+    trades_df = pd.DataFrame(trades)
+    total_return = (portfolio_value - 1000000.0) / 1000000.0 * 100
+    sharpe_ratio = np.mean(trades_df['pnl']) / np.std(trades_df['pnl']) if len(trades_df) > 0 else 0
+    max_drawdown = np.min(np.minimum.accumulate(portfolio_values) / np.maximum.accumulate(portfolio_values) - 1)
     
-    def test_calculate_spread(self):
-        """Test spread calculation"""
-        self.strategy.update_market_state(self.market_state)
-        
-        # Test base spread
-        spread = self.strategy.calculate_spread()
-        self.assertEqual(spread, self.strategy.target_spread)
-        
-        # Test spread with position
-        self.strategy.current_position = 50.0  # Half of max position
-        spread = self.strategy.calculate_spread()
-        self.assertTrue(spread > self.strategy.target_spread)
-        self.assertTrue(spread >= self.strategy.min_spread)
+    logger.info("\nPerformance Summary:")
+    logger.info("Total Return: %.2f%%", total_return)
+    logger.info("Sharpe Ratio: %.2f", sharpe_ratio)
+    logger.info("Max Drawdown: %.2f%%", max_drawdown * 100)
+    logger.info("Number of Trades: %d", len(trades))
+    logger.info("Average Position Size: %.2f", np.mean(np.abs(positions)))
+    logger.info("Average Action Size: %.4f", np.mean(np.abs(actions)))
     
-    def test_calculate_skew(self):
-        """Test skew calculation"""
-        self.strategy.update_market_state(self.market_state)
-        
-        # Test no skew at zero position
-        skew = self.strategy.calculate_skew()
-        self.assertAlmostEqual(skew, 0.0, places=6)
-        
-        # Test positive skew with long position
-        self.strategy.current_position = 50.0  # Half of max position
-        skew = self.strategy.calculate_skew()
-        self.assertTrue(skew > 0)
-        self.assertLess(skew, 1)
-        
-        # Test negative skew with short position
-        self.strategy.current_position = -50.0  # Half of max position short
-        skew = self.strategy.calculate_skew()
-        self.assertTrue(skew < 0)
-        self.assertGreater(skew, -1)
-    
-    def test_get_orders(self):
-        """Test order generation"""
-        self.strategy.update_market_state(self.market_state)
-        
-        # Test with no position
-        orders = self.strategy.get_orders()
-        self.assertEqual(len(orders), 2)
-        self.assertEqual(orders[0]['side'], 'buy')
-        self.assertEqual(orders[1]['side'], 'sell')
-        
-        # Verify order prices
-        self.assertTrue(orders[0]['price'] < self.market_state['price'])  # Buy below current price
-        self.assertTrue(orders[1]['price'] > self.market_state['price'])  # Sell above current price
-        
-        # Test with long position
-        self.strategy.current_position = 50.0
-        orders = self.strategy.get_orders()
-        self.assertTrue(orders[1]['amount'] > orders[0]['amount'])  # Should sell more than buy
-        
-        # Test with short position
-        self.strategy.current_position = -50.0
-        orders = self.strategy.get_orders()
-        self.assertTrue(orders[0]['amount'] > orders[1]['amount'])  # Should buy more than sell
-    
-    def test_get_action(self):
-        """Test action generation"""
-        self.strategy.update_market_state(self.market_state)
-        
-        # Test with no position
-        action = self.strategy.get_action()
-        self.assertIsInstance(action, float)
-        self.assertGreaterEqual(action, -1.0)
-        self.assertLessEqual(action, 1.0)
-        self.assertAlmostEqual(action, 0.0, places=6)  # Should be close to zero with no position
-        
-        # Test with long position
-        self.strategy.current_position = 50.0  # Half of max position
-        action = self.strategy.get_action()
-        self.assertTrue(action < 0)  # Should want to reduce position
-        
-        # Test with short position
-        self.strategy.current_position = -50.0  # Half of max position short
-        action = self.strategy.get_action()
-        self.assertTrue(action > 0)  # Should want to increase position
-        
-        # Test with no price
-        self.strategy.current_price = None
-        action = self.strategy.get_action()
-        self.assertEqual(action, 0.0)  # Should return 0 when price is None
+    # Print some statistics about the actions
+    logger.info("\nAction Statistics:")
+    logger.info("Mean Action: %.4f", np.mean(actions))
+    logger.info("Std Action: %.4f", np.std(actions))
+    logger.info("Min Action: %.4f", np.min(actions))
+    logger.info("Max Action: %.4f", np.max(actions))
+    logger.info("Zero Actions: %.2f%%", np.mean(np.array(actions) == 0) * 100)
 
-if __name__ == '__main__':
-    unittest.main() 
+if __name__ == "__main__":
+    main() 

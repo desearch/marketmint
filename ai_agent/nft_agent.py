@@ -1,23 +1,21 @@
 from typing import Dict, List, Any, Optional
 import logging
 from dataclasses import dataclass
-from .market_maker import MarketMaker
-from .strategies import PureMarketMaker
+from .strategy_runner import StrategyRunner
 
 @dataclass
-class MicroAgent:
-    """Represents a micro-agent with its governance token holdings and trading parameters"""
+class NFT:
+    """Represents an NFT with its strategy and governance token holdings"""
     id: str
+    strategy_id: str
     governance_tokens: float
-    trading_capital: float
-    strategy: MarketMaker
+    owner: str
     performance_metrics: Dict[str, float]
-    risk_limits: Dict[str, float]
 
 class NFTAgent:
     """
-    NFT Agent that manages multiple micro-agents for trading.
-    Uses governance tokens to allocate trading capital and manage risk.
+    NFT Agent that manages NFTs and their links to strategies.
+    Each NFT is linked to a specific strategy in the StrategyRunner.
     """
     
     def __init__(
@@ -33,207 +31,155 @@ class NFTAgent:
         self.max_drawdown = max_drawdown
         self.min_profit_threshold = min_profit_threshold
         
-        # Initialize micro-agents
-        self.micro_agents: Dict[str, MicroAgent] = {}
+        # Initialize Strategy Runner
+        self.strategy_runner = StrategyRunner(
+            total_capital=total_capital,
+            risk_free_rate=risk_free_rate,
+            max_drawdown=max_drawdown,
+            min_profit_threshold=min_profit_threshold
+        )
+        
+        # Initialize NFTs
+        self.nfts: Dict[str, NFT] = {}
         self.total_governance_tokens = 0.0
         
         self.logger.info("NFT Agent initialized with total capital: %f", total_capital)
     
-    def add_micro_agent(
+    def add_strategy(
         self,
-        agent_id: str,
-        governance_tokens: float,
-        initial_capital: float,
+        strategy_id: str,
         strategy_params: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        Add a new micro-agent to the system.
+        Add a new trading strategy to the StrategyRunner.
         
         Args:
-            agent_id: Unique identifier for the micro-agent
-            governance_tokens: Number of governance tokens held
-            initial_capital: Initial trading capital (used for risk limits only)
+            strategy_id: Unique identifier for the strategy
             strategy_params: Optional parameters for the trading strategy
         """
-        if agent_id in self.micro_agents:
-            raise ValueError(f"Micro-agent {agent_id} already exists")
+        self.strategy_runner.add_strategy(strategy_id, strategy_params)
+    
+    def mint_nft(
+        self,
+        nft_id: str,
+        owner: str,
+        strategy_id: str,
+        governance_tokens: float,
+        risk_limits: Optional[Dict[str, float]] = None
+    ) -> None:
+        """
+        Mint a new NFT and link it to a strategy.
         
-        # Create strategy and market maker
-        strategy = PureMarketMaker(**(strategy_params or {}))
-        market_maker = MarketMaker()
-        market_maker.set_strategy(strategy)
+        Args:
+            nft_id: Unique identifier for the NFT
+            owner: Address of the NFT owner
+            strategy_id: ID of the strategy to link to
+            governance_tokens: Number of governance tokens held
+            risk_limits: Optional risk limits for the agent
+        """
+        if nft_id in self.nfts:
+            raise ValueError(f"NFT {nft_id} already exists")
         
-        # Calculate proportional capital based on governance tokens
-        total_tokens = self.total_governance_tokens + governance_tokens
-        proportional_capital = (governance_tokens / total_tokens) * self.total_capital if total_tokens > 0 else 0.0
-        
-        # Create micro-agent with zero initial trading capital
-        micro_agent = MicroAgent(
-            id=agent_id,
+        # Add agent to strategy in StrategyRunner
+        self.strategy_runner.add_agent(
+            strategy_id=strategy_id,
+            agent_id=nft_id,
             governance_tokens=governance_tokens,
-            trading_capital=0.0,  # Start with zero capital
-            strategy=market_maker,
+            risk_limits=risk_limits
+        )
+        
+        # Create NFT
+        nft = NFT(
+            id=nft_id,
+            strategy_id=strategy_id,
+            governance_tokens=governance_tokens,
+            owner=owner,
             performance_metrics={
                 'total_profit': 0.0,
                 'current_drawdown': 0.0,
                 'sharpe_ratio': 0.0,
-                'win_rate': 0.0
-            },
-            risk_limits={
-                'max_position_size': proportional_capital,  # Risk limit based on proportional capital
-                'max_daily_loss': proportional_capital * 0.02,   # 2% of proportional capital
-                'min_profit_target': proportional_capital * self.min_profit_threshold
+                'win_rate': 0.0,
+                'governance_tokens': governance_tokens
             }
         )
         
-        self.micro_agents[agent_id] = micro_agent
+        self.nfts[nft_id] = nft
         self.total_governance_tokens += governance_tokens
         
         self.logger.info(
-            "Added micro-agent %s with %f governance tokens (proportional capital: %f)",
-            agent_id, governance_tokens, proportional_capital
+            "Minted NFT %s for owner %s linked to strategy %s with %f governance tokens",
+            nft_id, owner, strategy_id, governance_tokens
         )
     
     def update_market_state(self, state: Dict[str, Any]) -> None:
         """
-        Update market state for all micro-agents.
+        Update market state for all strategies.
         
         Args:
             state: Current market state
         """
-        for agent in self.micro_agents.values():
-            agent.strategy.update_market_state(state)
-    
-    def allocate_capital(self) -> None:
-        """Reallocate trading capital based on governance tokens"""
-        total_tokens = sum(agent.governance_tokens for agent in self.micro_agents.values())
-        if total_tokens == 0:
-            return
-
-        # Calculate proportional capital for each agent
-        for agent in self.micro_agents.values():
-            proportional_capital = (agent.governance_tokens / total_tokens) * self.total_capital
-            agent.trading_capital = proportional_capital
-            # Update risk limits based on new proportional capital
-            agent.risk_limits.update({
-                'max_position_size': proportional_capital,
-                'max_daily_loss': proportional_capital * 0.02,
-                'min_profit_target': proportional_capital * self.min_profit_threshold
-            })
-        
-        self.logger.debug(
-            "Capital allocation complete. Total allocated: %f",
-            sum(agent.trading_capital for agent in self.micro_agents.values())
-        )
+        self.strategy_runner.update_market_state(state)
     
     def get_aggregated_orders(self) -> List[Dict[str, Any]]:
         """
-        Get aggregated orders from all micro-agents.
-        Orders are scaled by each agent's trading capital.
+        Get aggregated orders from all strategies.
+        Orders are scaled by each NFT's governance token holdings.
         """
-        aggregated_orders = []
-        
-        for agent in self.micro_agents.values():
-            # Get orders from agent's strategy
-            orders = agent.strategy.get_orders()
-            
-            # Scale order amounts by agent's capital allocation
-            for order in orders:
-                scaled_order = order.copy()
-                scaled_order['amount'] *= (agent.trading_capital / self.total_capital)
-                aggregated_orders.append(scaled_order)
-        
-        return aggregated_orders
+        return self.strategy_runner.get_aggregated_orders()
     
     def get_aggregated_action(self) -> float:
         """
-        Get aggregated trading action from all micro-agents.
-        Actions are weighted by each agent's trading capital.
+        Get aggregated trading action from all strategies.
+        Actions are weighted by each NFT's governance token holdings.
         """
-        weighted_action = 0.0
-        total_weight = 0.0
-        
-        for agent in self.micro_agents.values():
-            action = agent.strategy.get_action()
-            weight = agent.trading_capital / self.total_capital
-            
-            self.logger.debug(
-                "Agent %s: action=%.4f, weight=%.4f, capital=%.2f",
-                agent.id, action, weight, agent.trading_capital
-            )
-            
-            weighted_action += action * weight
-            total_weight += weight
-        
-        if total_weight == 0:
-            self.logger.warning("No agents have trading capital allocated")
-            return 0.0
-            
-        final_action = weighted_action / total_weight
-        self.logger.debug(
-            "Aggregated action: %.4f (weighted=%.4f, total_weight=%.4f)",
-            final_action, weighted_action, total_weight
-        )
-        
-        return final_action
+        return self.strategy_runner.get_aggregated_action()
     
-    def update_performance_metrics(self, agent_id: str, metrics: Dict[str, float]) -> None:
+    def distribute_profits(self, total_profit: float) -> Dict[str, float]:
         """
-        Update performance metrics for a micro-agent.
+        Distribute profits to NFT owners based on their governance token holdings.
         
         Args:
-            agent_id: ID of the micro-agent
-            metrics: New performance metrics
-        """
-        if agent_id not in self.micro_agents:
-            raise ValueError(f"Micro-agent {agent_id} not found")
+            total_profit: Total profit to distribute
             
-        agent = self.micro_agents[agent_id]
-        agent.performance_metrics.update(metrics)
-        
-        # Check if agent should be deactivated due to poor performance
-        if (agent.performance_metrics['current_drawdown'] > self.max_drawdown or
-            agent.performance_metrics['total_profit'] < agent.risk_limits['min_profit_target']):
-            self.logger.warning(
-                "Micro-agent %s performance below threshold. Current drawdown: %f, Total profit: %f",
-                agent_id,
-                agent.performance_metrics['current_drawdown'],
-                agent.performance_metrics['total_profit']
-            )
-    
-    def get_agent_performance(self, agent_id: str) -> Dict[str, float]:
+        Returns:
+            Dictionary mapping owner addresses to their profit share
         """
-        Get performance metrics for a specific micro-agent.
+        # Get profit distribution from StrategyRunner
+        agent_profits = self.strategy_runner.distribute_profits(total_profit)
+        
+        # Map agent profits to NFT owners
+        owner_profits = {}
+        for nft_id, profit in agent_profits.items():
+            nft = self.nfts[nft_id]
+            owner_profits[nft.owner] = owner_profits.get(nft.owner, 0.0) + profit
+            nft.performance_metrics['total_profit'] += profit
+            
+        return owner_profits
+    
+    def get_nft_performance(self, nft_id: str) -> Dict[str, float]:
+        """
+        Get performance metrics for a specific NFT.
         
         Args:
-            agent_id: ID of the micro-agent
+            nft_id: ID of the NFT
             
         Returns:
             Dictionary of performance metrics
         """
-        if agent_id not in self.micro_agents:
-            raise ValueError(f"Micro-agent {agent_id} not found")
+        if nft_id not in self.nfts:
+            raise ValueError(f"NFT {nft_id} not found")
             
-        return self.micro_agents[agent_id].performance_metrics
+        nft = self.nfts[nft_id]
+        return self.strategy_runner.get_agent_performance(nft.strategy_id, nft_id)
     
-    def get_system_metrics(self) -> Dict[str, float]:
-        """Get aggregated performance metrics for all agents"""
-        if not self.micro_agents:
-            return {
-                'total_profit': 0.0,
-                'max_drawdown': 0.0,
-                'average_sharpe_ratio': 0.0,
-                'average_win_rate': 0.0
-            }
-
-        total_profit = sum(agent.performance_metrics['total_profit'] for agent in self.micro_agents.values())
-        max_drawdown = max(agent.performance_metrics['current_drawdown'] for agent in self.micro_agents.values())
-        avg_sharpe = sum(agent.performance_metrics['sharpe_ratio'] for agent in self.micro_agents.values()) / len(self.micro_agents)
-        avg_win_rate = sum(agent.performance_metrics['win_rate'] for agent in self.micro_agents.values()) / len(self.micro_agents)
-
-        return {
-            'total_profit': round(total_profit, 2),
-            'max_drawdown': round(max_drawdown, 2),
-            'average_sharpe_ratio': round(avg_sharpe, 2),
-            'average_win_rate': round(avg_win_rate, 2)
-        } 
+    def get_strategy_metrics(self, strategy_id: str) -> Dict[str, float]:
+        """
+        Get aggregated performance metrics for all NFTs in a strategy.
+        
+        Args:
+            strategy_id: ID of the strategy
+            
+        Returns:
+            Dictionary of aggregated metrics
+        """
+        return self.strategy_runner.get_strategy_metrics(strategy_id) 
