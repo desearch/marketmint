@@ -46,6 +46,9 @@ class PureMarketMaker:
         
     def calculate_target_inventory(self, portfolio_value: float, current_price: float) -> float:
         """Calculate target inventory in base currency"""
+        if current_price <= 0:
+            return 0.0  # Return zero target inventory for invalid prices
+            
         target = (portfolio_value * self.inventory_target_base_pct) / current_price
         self.logger.debug(f"Target inventory: {target:.2f}")
         return target
@@ -181,17 +184,27 @@ class PureMarketMaker:
         target_position = self.calculate_target_inventory(portfolio_value, current_price)
         inventory_bias = self.calculate_inventory_bias(current_position, target_position)
         
+        # Handle zero target position
+        if target_position == 0:
+            if current_position > 0:
+                return -1.0  # Full sell if we have inventory
+            elif current_position < 0:
+                return 1.0   # Full buy if we have negative inventory
+            else:
+                return 0.0   # No action if we have no inventory
+        
         # Calculate relative position deviation
         position_deviation = (current_position - target_position) / target_position
         self.logger.debug(f"Position deviation: {position_deviation:.2f}")
         
-        # When far from target position, take more aggressive action
-        if abs(position_deviation) > 0.2:  # More than 20% deviation
-            # Return a strong sell signal when we have too much inventory
-            # and a strong buy signal when we have too little
-            action = -np.sign(position_deviation)  # Negative because we want to reduce the deviation
-            self.logger.debug(f"Taking aggressive action: {action} (deviation: {position_deviation:.2f})")
-            return float(action)
+        # Take aggressive action for large deviations
+        if abs(position_deviation) > 0.2:  # 20% deviation threshold
+            self.logger.debug(f"Large position deviation: {position_deviation:.2f}, taking aggressive action")
+            return -np.sign(position_deviation)  # Return -1 for excess, 1 for deficit
+        
+        # For smaller deviations, scale the action based on deviation
+        self.logger.debug(f"Position deviation: {position_deviation:.2f}, scaling action")
+        return -position_deviation  # Negative because we want to reduce the deviation
         
         # For smaller deviations, use the order-based approach
         orders = self.generate_orders(
