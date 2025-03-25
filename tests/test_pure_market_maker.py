@@ -13,141 +13,111 @@ class TestPureMarketMaker(unittest.TestCase):
         self.logger = logging.getLogger(__name__)
         
         self.strategy = PureMarketMaker(
-            bid_spread=0.01,
-            ask_spread=0.01,
-            min_spread=0.002,
-            order_refresh_time=60,
-            inventory_target_base_pct=0.5,
-            inventory_range_multiplier=1.0,
-            risk_factor=0.5
+            target_spread=0.002,  # 0.2% target spread
+            min_spread=0.001,     # 0.1% minimum spread
+            max_position=100.0,   # Maximum position size
+            position_limit=0.5,   # 50% of capital as position limit
+            risk_aversion=1.0     # Risk aversion parameter
         )
         
         # Sample market state
-        self.env_state = {
+        self.market_state = {
             'price': 100.0,
             'portfolio_value': 10000.0,
-            'position': 50.0,
+            'position': 0.0,
             'timestamp': 1000
         }
     
-    def test_calculate_target_inventory(self):
-        """Test target inventory calculation"""
-        portfolio_value = 10000.0
-        current_price = 100.0
-        target = self.strategy.calculate_target_inventory(portfolio_value, current_price)
-        expected = (portfolio_value * 0.5) / current_price  # 50% of portfolio in base currency
-        self.assertEqual(target, expected)
+    def test_update_market_state(self):
+        """Test market state update"""
+        self.strategy.update_market_state(self.market_state)
+        self.assertEqual(self.strategy.current_price, 100.0)
+        self.assertEqual(self.strategy.current_position, 0.0)
+        self.assertEqual(self.strategy.portfolio_value, 10000.0)
     
-    def test_calculate_inventory_bias(self):
-        """Test inventory bias calculation"""
-        # Test with current position equal to target
-        bias = self.strategy.calculate_inventory_bias(50.0, 50.0)
-        self.assertEqual(bias, 0.0)
+    def test_calculate_spread(self):
+        """Test spread calculation"""
+        self.strategy.update_market_state(self.market_state)
         
-        # Test with excess position
-        bias = self.strategy.calculate_inventory_bias(75.0, 50.0)
-        self.assertTrue(bias > 0)
-        self.assertLessEqual(bias, 1.0)
+        # Test base spread
+        spread = self.strategy.calculate_spread()
+        self.assertEqual(spread, self.strategy.target_spread)
         
-        # Test with deficit position
-        bias = self.strategy.calculate_inventory_bias(25.0, 50.0)
-        self.assertTrue(bias < 0)
-        self.assertGreaterEqual(bias, -1.0)
+        # Test spread with position
+        self.strategy.current_position = 50.0  # Half of max position
+        spread = self.strategy.calculate_spread()
+        self.assertTrue(spread > self.strategy.target_spread)
+        self.assertTrue(spread >= self.strategy.min_spread)
     
-    def test_adjust_spreads(self):
-        """Test spread adjustment based on inventory bias"""
-        # Test with no bias
-        bid_spread, ask_spread = self.strategy.adjust_spreads(0.01, 0.01, 0.0)
-        self.assertEqual(bid_spread, 0.01)
-        self.assertEqual(ask_spread, 0.01)
+    def test_calculate_skew(self):
+        """Test skew calculation"""
+        self.strategy.update_market_state(self.market_state)
         
-        # Test with positive bias (excess inventory)
-        bid_spread, ask_spread = self.strategy.adjust_spreads(0.01, 0.01, 0.5)
-        self.assertTrue(bid_spread > 0.01)  # Wider bid spread
-        self.assertTrue(ask_spread < 0.01)  # Tighter ask spread
+        # Test no skew at zero position
+        skew = self.strategy.calculate_skew()
+        self.assertAlmostEqual(skew, 0.0, places=6)
         
-        # Test minimum spread enforcement
-        bid_spread, ask_spread = self.strategy.adjust_spreads(0.001, 0.001, 0.0)
-        self.assertEqual(bid_spread, self.strategy.min_spread)
-        self.assertEqual(ask_spread, self.strategy.min_spread)
+        # Test positive skew with long position
+        self.strategy.current_position = 50.0  # Half of max position
+        skew = self.strategy.calculate_skew()
+        self.assertTrue(skew > 0)
+        self.assertLess(skew, 1)
+        
+        # Test negative skew with short position
+        self.strategy.current_position = -50.0  # Half of max position short
+        skew = self.strategy.calculate_skew()
+        self.assertTrue(skew < 0)
+        self.assertGreater(skew, -1)
     
-    def test_calculate_order_prices(self):
-        """Test order price calculation"""
-        mid_price = 100.0
-        
-        # Test with no inventory bias
-        bid_price, ask_price = self.strategy.calculate_order_prices(mid_price, 0.0)
-        self.assertEqual(bid_price, mid_price * 0.99)  # 1% below mid price
-        self.assertEqual(ask_price, mid_price * 1.01)  # 1% above mid price
-        
-        # Test with price limits
-        self.strategy.price_floor = 98.0
-        self.strategy.price_ceiling = 102.0
-        bid_price, ask_price = self.strategy.calculate_order_prices(mid_price, 0.0)
-        self.assertEqual(bid_price, 98.0)
-        self.assertEqual(ask_price, 102.0)
-    
-    def test_calculate_order_amounts(self):
-        """Test order amount calculation"""
-        # Test with fixed order amount
-        self.strategy.order_amount = 1.0
-        bid_amount, ask_amount = self.strategy.calculate_order_amounts(10000.0, 100.0, 50.0)
-        self.assertEqual(bid_amount, 1.0)
-        self.assertEqual(ask_amount, 1.0)
-        
-        # Test with dynamic order amounts
-        self.strategy.order_amount = None
-        bid_amount, ask_amount = self.strategy.calculate_order_amounts(10000.0, 100.0, 25.0)
-        self.assertTrue(bid_amount > ask_amount)  # Should buy more when below target
-        
-        bid_amount, ask_amount = self.strategy.calculate_order_amounts(10000.0, 100.0, 75.0)
-        self.assertTrue(ask_amount > bid_amount)  # Should sell more when above target
-    
-    def test_should_refresh_orders(self):
-        """Test order refresh logic"""
-        self.strategy.last_order_refresh = 0
-        self.assertTrue(self.strategy.should_refresh_orders(61))
-        self.assertFalse(self.strategy.should_refresh_orders(59))
-    
-    def test_generate_orders(self):
+    def test_get_orders(self):
         """Test order generation"""
-        orders = self.strategy.generate_orders(100.0, 10000.0, 50.0, 1000)
+        self.strategy.update_market_state(self.market_state)
+        
+        # Test with no position
+        orders = self.strategy.get_orders()
         self.assertEqual(len(orders), 2)
         self.assertEqual(orders[0]['side'], 'buy')
         self.assertEqual(orders[1]['side'], 'sell')
         
-        # Test order caching
-        same_orders = self.strategy.generate_orders(100.0, 10000.0, 50.0, 1030)
-        self.assertEqual(orders, same_orders)  # Should return cached orders
+        # Verify order prices
+        self.assertTrue(orders[0]['price'] < self.market_state['price'])  # Buy below current price
+        self.assertTrue(orders[1]['price'] > self.market_state['price'])  # Sell above current price
         
-        new_orders = self.strategy.generate_orders(100.0, 10000.0, 50.0, 1061)
-        self.assertNotEqual(orders, new_orders)  # Should generate new orders
+        # Test with long position
+        self.strategy.current_position = 50.0
+        orders = self.strategy.get_orders()
+        self.assertTrue(orders[1]['amount'] > orders[0]['amount'])  # Should sell more than buy
+        
+        # Test with short position
+        self.strategy.current_position = -50.0
+        orders = self.strategy.get_orders()
+        self.assertTrue(orders[0]['amount'] > orders[1]['amount'])  # Should buy more than sell
     
     def test_get_action(self):
         """Test action generation"""
-        # Test initial state
-        action = self.strategy.get_action(self.env_state)
-        self.logger.debug(f"Initial action: {action}")
+        self.strategy.update_market_state(self.market_state)
+        
+        # Test with no position
+        action = self.strategy.get_action()
         self.assertIsInstance(action, float)
         self.assertGreaterEqual(action, -1.0)
         self.assertLessEqual(action, 1.0)
+        self.assertAlmostEqual(action, 0.0, places=6)  # Should be close to zero with no position
         
-        # Test with excess position (50% above target)
-        target = self.strategy.calculate_target_inventory(10000.0, 100.0)
-        self.logger.debug(f"Target position: {target}")
+        # Test with long position
+        self.strategy.current_position = 50.0  # Half of max position
+        action = self.strategy.get_action()
+        self.assertTrue(action < 0)  # Should want to reduce position
         
-        self.env_state['position'] = 75.0  # Above target
-        self.logger.debug(f"Testing with position {self.env_state['position']} (target: {target})")
-        action = self.strategy.get_action(self.env_state)
-        self.logger.debug(f"Action for excess position: {action}")
-        self.assertTrue(action < 0, f"Expected negative action for excess position, got {action}")
+        # Test with short position
+        self.strategy.current_position = -50.0  # Half of max position short
+        action = self.strategy.get_action()
+        self.assertTrue(action > 0)  # Should want to increase position
         
-        # Test with deficit position (50% below target)
-        self.env_state['position'] = 25.0  # Below target
-        self.logger.debug(f"Testing with position {self.env_state['position']} (target: {target})")
-        action = self.strategy.get_action(self.env_state)
-        self.logger.debug(f"Action for deficit position: {action}")
-        self.assertTrue(action > 0, f"Expected positive action for deficit position, got {action}")
+        # Test with no price
+        self.strategy.current_price = None
+        action = self.strategy.get_action()
+        self.assertEqual(action, 0.0)  # Should return 0 when price is None
 
 if __name__ == '__main__':
     unittest.main() 

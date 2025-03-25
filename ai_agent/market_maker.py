@@ -1,94 +1,68 @@
-from typing import Dict, Any, List, Optional
+"""
+Market Maker implementation that wraps trading strategies
+"""
+
+from typing import Dict, List, Any
 import logging
-from .strategies import PureMarketMaker
 
 class MarketMaker:
     """
-    High-level API for market making services.
-    This class provides a clean interface for market making operations.
+    Market Maker that wraps a trading strategy and provides a consistent interface
     """
     
-    def __init__(
-        self,
-        strategy: Optional[PureMarketMaker] = None,
-        **strategy_params
-    ):
-        """
-        Initialize the market maker with a strategy.
-        
-        Args:
-            strategy: Optional pre-configured strategy instance
-            **strategy_params: Parameters to create a new strategy if none provided
-        """
+    def __init__(self, **strategy_params):
         self.logger = logging.getLogger(__name__)
+        self.strategy = None  # Will be set by the NFTAgent
+        self.current_state = None
         
-        if strategy is None:
-            self.strategy = PureMarketMaker(**strategy_params)
-        else:
-            self.strategy = strategy
-            
-        self.logger.info("Market maker initialized with strategy: %s", self.strategy.__class__.__name__)
+        self.logger.info("Market maker initialized with strategy: %s", 
+                        self.strategy.__class__.__name__ if self.strategy else "None")
     
     def update_market_state(self, state: Dict[str, Any]) -> None:
         """
-        Update the market maker with current market state.
+        Update market state
         
         Args:
-            state: Dictionary containing current market state
-                  (price, portfolio_value, position, timestamp)
+            state: Current market state including price, position, etc.
         """
-        # Validate required fields
-        required_fields = ['price', 'portfolio_value', 'position', 'timestamp']
+        required_fields = ['price', 'position', 'timestamp']
         for field in required_fields:
             if field not in state:
                 raise ValueError(f"Missing required field: {field}")
         
-        # Validate field types
-        if not isinstance(state['price'], (int, float)):
-            raise ValueError("Price must be a number")
-        if not isinstance(state['portfolio_value'], (int, float)):
-            raise ValueError("Portfolio value must be a number")
-        if not isinstance(state['position'], (int, float)):
-            raise ValueError("Position must be a number")
         if not isinstance(state['timestamp'], (int, float)):
             raise ValueError("Timestamp must be a number")
         
         self.current_state = state
-        self.logger.debug("Market state updated: %s", state)
+        if self.strategy:
+            self.strategy.update_market_state(state)
+            self.logger.debug(
+                "Updated market state: price=%.2f, position=%.2f",
+                state['price'], state['position']
+            )
     
     def get_orders(self) -> List[Dict[str, Any]]:
-        """
-        Get current market making orders.
-        
-        Returns:
-            List of order dictionaries with side, price, and amount
-        """
-        if not hasattr(self, 'current_state'):
-            raise ValueError("Market state not initialized. Call update_market_state first.")
-            
-        orders = self.strategy.generate_orders(
-            self.current_state['price'],
-            self.current_state['portfolio_value'],
-            self.current_state['position'],
-            self.current_state['timestamp']
-        )
-        
+        """Get current orders from the strategy"""
+        if not self.strategy:
+            return []
+        orders = self.strategy.get_orders()
         self.logger.debug("Generated orders: %s", orders)
         return orders
     
     def get_action(self) -> float:
-        """
-        Get the current trading action.
-        
-        Returns:
-            Float between -1 (full sell) and 1 (full buy)
-        """
-        if not hasattr(self, 'current_state'):
-            raise ValueError("Market state not initialized. Call update_market_state first.")
-            
-        action = self.strategy.get_action(self.current_state)
-        self.logger.debug("Generated action: %s", action)
+        """Get trading action from the strategy"""
+        if not self.strategy:
+            return 0.0
+        action = self.strategy.get_action()
+        self.logger.debug("Generated action: %.2f", action)
         return action
+    
+    def set_strategy(self, strategy) -> None:
+        """Set the trading strategy"""
+        self.strategy = strategy
+        self.logger.info("Set strategy: %s", strategy.__class__.__name__)
+        if self.current_state and self.strategy:
+            self.strategy.update_market_state(self.current_state)
     
     def should_refresh_orders(self) -> bool:
         """
@@ -97,10 +71,8 @@ class MarketMaker:
         Returns:
             Boolean indicating if orders should be refreshed
         """
-        if not hasattr(self, 'current_state'):
-            raise ValueError("Market state not initialized. Call update_market_state first.")
-            
-        return self.strategy.should_refresh_orders(self.current_state['timestamp'])
+        # Refresh orders every 5 minutes by default
+        return True
     
     def get_spreads(self) -> Dict[str, float]:
         """

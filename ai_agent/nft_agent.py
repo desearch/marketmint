@@ -58,8 +58,10 @@ class NFTAgent:
         if agent_id in self.micro_agents:
             raise ValueError(f"Micro-agent {agent_id} already exists")
         
-        # Create strategy with default or custom parameters
-        strategy = MarketMaker(**(strategy_params or {}))
+        # Create strategy and market maker
+        strategy = PureMarketMaker(**(strategy_params or {}))
+        market_maker = MarketMaker()
+        market_maker.set_strategy(strategy)
         
         # Calculate proportional capital based on governance tokens
         total_tokens = self.total_governance_tokens + governance_tokens
@@ -70,7 +72,7 @@ class NFTAgent:
             id=agent_id,
             governance_tokens=governance_tokens,
             trading_capital=0.0,  # Start with zero capital
-            strategy=strategy,
+            strategy=market_maker,
             performance_metrics={
                 'total_profit': 0.0,
                 'current_drawdown': 0.0,
@@ -155,10 +157,25 @@ class NFTAgent:
             action = agent.strategy.get_action()
             weight = agent.trading_capital / self.total_capital
             
+            self.logger.debug(
+                "Agent %s: action=%.4f, weight=%.4f, capital=%.2f",
+                agent.id, action, weight, agent.trading_capital
+            )
+            
             weighted_action += action * weight
             total_weight += weight
         
-        return weighted_action / total_weight if total_weight > 0 else 0.0
+        if total_weight == 0:
+            self.logger.warning("No agents have trading capital allocated")
+            return 0.0
+            
+        final_action = weighted_action / total_weight
+        self.logger.debug(
+            "Aggregated action: %.4f (weighted=%.4f, total_weight=%.4f)",
+            final_action, weighted_action, total_weight
+        )
+        
+        return final_action
     
     def update_performance_metrics(self, agent_id: str, metrics: Dict[str, float]) -> None:
         """
