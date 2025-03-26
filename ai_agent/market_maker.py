@@ -4,6 +4,7 @@ Market Maker implementation that wraps trading strategies
 
 from typing import Dict, List, Any
 import logging
+from .strategies import PureMarketMaker
 
 class MarketMaker:
     """
@@ -12,11 +13,18 @@ class MarketMaker:
     
     def __init__(self, **strategy_params):
         self.logger = logging.getLogger(__name__)
-        self.strategy = None  # Will be set by the NFTAgent
+        
+        # Initialize with default strategy if none provided
+        if 'strategy' in strategy_params:
+            self.strategy = strategy_params.pop('strategy')
+        else:
+            self.strategy = PureMarketMaker(**strategy_params)
+            self.strategy.market_maker = self
+            
         self.current_state = None
         
         self.logger.info("Market maker initialized with strategy: %s", 
-                        self.strategy.__class__.__name__ if self.strategy else "None")
+                        self.strategy.__class__.__name__)
     
     def update_market_state(self, state: Dict[str, Any]) -> None:
         """
@@ -25,13 +33,20 @@ class MarketMaker:
         Args:
             state: Current market state including price, position, etc.
         """
-        required_fields = ['price', 'position', 'timestamp']
+        required_fields = ['price', 'position', 'timestamp', 'portfolio_value']
         for field in required_fields:
             if field not in state:
                 raise ValueError(f"Missing required field: {field}")
         
+        # Validate field types
         if not isinstance(state['timestamp'], (int, float)):
             raise ValueError("Timestamp must be a number")
+        if not isinstance(state['price'], (int, float)):
+            raise ValueError("Price must be a number")
+        if not isinstance(state['position'], (int, float)):
+            raise ValueError("Position must be a number")
+        if not isinstance(state['portfolio_value'], (int, float)):
+            raise ValueError("Portfolio value must be a number")
         
         self.current_state = state
         if self.strategy:
@@ -41,11 +56,24 @@ class MarketMaker:
                 state['price'], state['position']
             )
     
-    def get_orders(self) -> List[Dict[str, Any]]:
-        """Get current orders from the strategy"""
+    def get_orders(self, market_state: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+        """
+        Get current orders from the strategy
+        
+        Args:
+            market_state: Optional market state. If not provided, uses current state.
+            
+        Returns:
+            List of order dictionaries
+        """
         if not self.strategy:
             return []
-        orders = self.strategy.get_orders(self.current_state)
+            
+        state_to_use = market_state if market_state is not None else self.current_state
+        if not state_to_use:
+            return []
+            
+        orders = self.strategy.get_orders(state_to_use)
         self.logger.debug("Generated orders: %s", orders)
         return orders
     
@@ -90,22 +118,26 @@ class MarketMaker:
         # Refresh orders every 5 minutes by default
         return True
     
-    def get_spreads(self) -> Dict[str, float]:
+    def get_spreads(self, market_state: Dict[str, Any] = None) -> Dict[str, float]:
         """
         Get current bid and ask spreads.
         
+        Args:
+            market_state: Optional market state. If not provided, uses current state.
+            
         Returns:
             Dictionary with bid_spread and ask_spread
         """
-        if not hasattr(self, 'current_state'):
+        state_to_use = market_state if market_state is not None else self.current_state
+        if not state_to_use:
             raise ValueError("Market state not initialized. Call update_market_state first.")
             
         target_position = self.strategy.calculate_target_inventory(
-            self.current_state['portfolio_value'],
-            self.current_state['price']
+            state_to_use['portfolio_value'],
+            state_to_use['price']
         )
         inventory_bias = self.strategy.calculate_inventory_bias(
-            self.current_state['position'],
+            state_to_use['position'],
             target_position
         )
         
@@ -120,27 +152,31 @@ class MarketMaker:
             'ask_spread': ask_spread
         }
     
-    def get_inventory_metrics(self) -> Dict[str, float]:
+    def get_inventory_metrics(self, market_state: Dict[str, Any] = None) -> Dict[str, float]:
         """
         Get current inventory metrics.
         
+        Args:
+            market_state: Optional market state. If not provided, uses current state.
+            
         Returns:
             Dictionary with target_position, current_position, and inventory_bias
         """
-        if not hasattr(self, 'current_state'):
+        state_to_use = market_state if market_state is not None else self.current_state
+        if not state_to_use:
             raise ValueError("Market state not initialized. Call update_market_state first.")
             
         target_position = self.strategy.calculate_target_inventory(
-            self.current_state['portfolio_value'],
-            self.current_state['price']
+            state_to_use['portfolio_value'],
+            state_to_use['price']
         )
         inventory_bias = self.strategy.calculate_inventory_bias(
-            self.current_state['position'],
+            state_to_use['position'],
             target_position
         )
         
         return {
             'target_position': target_position,
-            'current_position': self.current_state['position'],
+            'current_position': state_to_use['position'],
             'inventory_bias': inventory_bias
         } 

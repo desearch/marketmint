@@ -5,12 +5,53 @@ from ai_agent.strategy import AITrader
 from data.database import Database
 
 @pytest.fixture
-def ai_trader():
-    return AITrader()
+def market_data():
+    """Create sample market data for testing"""
+    dates = pd.date_range(start='2023-01-01', end='2023-12-31', freq='D')
+    data = {
+        'price': np.random.normal(2000, 100, len(dates)),
+        'volume': np.random.normal(500000, 50000, len(dates)),
+        'liquidity': np.random.normal(1000000, 100000, len(dates))
+    }
+    return pd.DataFrame(data, index=dates)
+
+@pytest.fixture
+def ai_trader(market_data):
+    """Initialize AI trader with sample market data"""
+    trader = AITrader()
+    trader.create_env(market_data)
+    return trader
 
 @pytest.fixture
 def database():
     return Database()
+
+def test_ai_trader_initialization(ai_trader):
+    """Test AI trader initialization"""
+    assert ai_trader.env is not None
+    assert ai_trader.model is None
+
+def test_ai_trader_preprocessing(ai_trader, market_data):
+    """Test data preprocessing"""
+    processed_data = ai_trader.preprocess_data(market_data)
+    assert 'sma_7' in processed_data.columns
+    assert 'sma_30' in processed_data.columns
+    assert 'rsi' in processed_data.columns
+    assert not processed_data.isnull().any().any()
+
+def test_ai_trader_training(ai_trader, market_data):
+    """Test model training"""
+    results = ai_trader.train(market_data, total_timesteps=1000)
+    assert ai_trader.model is not None
+    assert 'total_timesteps' in results
+    assert 'final_reward' in results
+
+def test_ai_trader_prediction(ai_trader, market_data):
+    """Test trading predictions"""
+    ai_trader.train(market_data, total_timesteps=1000)
+    predictions = ai_trader.predict(market_data)
+    assert len(predictions) > 0
+    assert all(-1.0 <= p <= 1.0 for p in predictions)
 
 def test_trade_execution(ai_trader):
     """Test basic trade execution"""
@@ -18,8 +59,10 @@ def test_trade_execution(ai_trader):
     result = ai_trader.execute_trade(amount)
     
     assert isinstance(result, dict)
-    assert 'status' in result
-    assert 'message' in result
+    assert 'action' in result
+    assert 'reward' in result
+    assert 'portfolio_value' in result
+    assert 'current_price' in result
 
 def test_database_operations(database):
     """Test database operations"""

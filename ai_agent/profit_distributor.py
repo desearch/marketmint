@@ -19,25 +19,54 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class ProfitDistributor:
-    def __init__(self):
-        self.w3 = Web3(Web3.HTTPProvider(os.getenv('RPC_URL')))
-        self.account = Account.from_key(os.getenv('PRIVATE_KEY'))
-        self.profit_distributor_address = os.getenv('PROFIT_DISTRIBUTOR_ADDRESS')
+    def __init__(
+        self,
+        contract_address: str,
+        private_key: str,
+        contract_abi_path: str,
+        rpc_url: str = "http://localhost:8545",
+        gas_limit: int = 300000
+    ):
+        """
+        Initialize profit distributor
+        
+        Args:
+            contract_address: Address of the ProfitDistributor contract
+            private_key: Private key for signing transactions
+            contract_abi_path: Path to contract ABI JSON file
+            rpc_url: RPC URL for Web3 provider
+            gas_limit: Gas limit for transactions
+        """
+        self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+        self.account = Account.from_key(private_key)
+        self.profit_distributor_address = contract_address
+        self.gas_limit = gas_limit
         
         # Load contract ABI
-        with open('contracts/artifacts/contracts/ProfitDistributor.sol/ProfitDistributor.json', 'r') as f:
+        with open(contract_abi_path, 'r') as f:
             contract_json = json.load(f)
             self.contract_abi = contract_json['abi']
         
         # Initialize contract
         self.contract = self.w3.eth.contract(
-            address=self.profit_distributor_address,
+            address=self.w3.to_checksum_address(self.profit_distributor_address),
             abi=self.contract_abi
         )
 
     def distribute_profits(self, amount: float) -> Dict:
-        """Distribute profits to NFT holders"""
+        """
+        Distribute profits to NFT holders
+        
+        Args:
+            amount: Amount of profits to distribute (in ETH)
+            
+        Returns:
+            Transaction status and details
+        """
         try:
+            if amount <= 0:
+                raise ValueError("Profit amount must be positive")
+                
             # Convert amount to Wei
             amount_in_wei = Web3.to_wei(amount, 'ether')
             
@@ -45,7 +74,7 @@ class ProfitDistributor:
             tx = self.contract.functions.distributeProfits().build_transaction({
                 'from': self.account.address,
                 'value': amount_in_wei,
-                'gas': int(os.getenv('GAS_LIMIT', 300000)),
+                'gas': self.gas_limit,
                 'gasPrice': self.w3.eth.gas_price,
                 'nonce': self.w3.eth.get_transaction_count(self.account.address)
             })
@@ -71,8 +100,58 @@ class ProfitDistributor:
                 }
             }
             
+        except ValueError as e:
+            logger.error("Invalid profit amount: %s", str(e))
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
         except Exception as e:
             logger.error("Profit distribution failed: %s", str(e))
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
+
+    def claim_profits(self, token_id: int) -> Dict:
+        """
+        Claim profits for a specific NFT token
+        
+        Args:
+            token_id: Token ID to claim profits for
+            
+        Returns:
+            Transaction status and claimed amount
+        """
+        try:
+            # Build transaction
+            tx = self.contract.functions.claimProfits(token_id).build_transaction({
+                'from': self.account.address,
+                'gas': self.gas_limit,
+                'gasPrice': self.w3.eth.gas_price,
+                'nonce': self.w3.eth.get_transaction_count(self.account.address)
+            })
+            
+            # Sign and send transaction
+            signed_tx = self.account.sign_transaction(tx)
+            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            
+            # Wait for receipt
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+            
+            # Get claim details from event logs
+            logs = self.contract.events.ProfitsClaimed().process_receipt(receipt)
+            claimed_amount = Web3.from_wei(logs[0]['args']['amount'], 'ether')
+            
+            return {
+                'status': 'success',
+                'transaction_hash': receipt['transactionHash'].hex(),
+                'gas_used': receipt['gasUsed'],
+                'amount_claimed': claimed_amount
+            }
+            
+        except Exception as e:
+            logger.error("Failed to claim profits: %s", str(e))
             return {
                 'status': 'error',
                 'message': str(e)
@@ -117,4 +196,13 @@ class ProfitDistributor:
             return Web3.from_wei(total, 'ether')
         except Exception as e:
             logger.error("Failed to get total distributed: %s", str(e))
+            return 0.0
+
+    def get_vault_balance(self) -> float:
+        """Get current balance of the profit distributor vault"""
+        try:
+            balance = self.w3.eth.get_balance(self.profit_distributor_address)
+            return Web3.from_wei(balance, 'ether')
+        except Exception as e:
+            logger.error("Failed to get vault balance: %s", str(e))
             return 0.0 
