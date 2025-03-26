@@ -1256,4 +1256,94 @@ flowchart TD
 | Governance | Community-controlled evolution |
 
 ---
+## 🧠 **1. Who Owns the Trade Engine?**
 
+> The **Trade Engine is owned by the Agent** — but the **Agent is governed by the NFT holders**.
+
+### 🎯 Let’s define this clearly:
+
+| Entity | Role | Ownership |
+|--------|------|-----------|
+| **NFT Holders** | Fund and govern the agent | Each NFT = % ownership + voting rights |
+| **AI Agent** | Logic that generates trades & manages funds | Controlled by NFT governance |
+| **Trade Engine** | Executes the AI’s decisions on-chain | Owned by the Agent (or Agent Vault contract) |
+
+So the **agent owns the engine**, and **NFT holders own the agent**.
+
+---
+
+## 🔗 **2. How is the Trade Engine Connected to the Agent?**
+
+Here’s how this relationship works, layer by layer:
+
+### ⚙️ Architectural Layers:
+
+```mermaid
+graph TD
+  A[NFT Holder] --> B[NFT Contract (Governance)]
+  B --> C[AI Agent Config & Vault Access]
+  C --> D[Trade Engine / Liquidity Manager]
+  D --> E[DEX (Uniswap/Balancer)]
+```
+
+---
+
+### 💡 Component Breakdown
+
+#### 🔹 A. **NFT Contract**
+- NFT mint proceeds fund the vault.
+- Stores ownership data.
+- May include governance logic (or interact with DAO contract).
+
+#### 🔹 B. **AI Agent**
+- A backend service or on-chain module:
+  - Reads market data.
+  - Decides on actions (buy/sell/add liquidity).
+  - Operates based on a configuration file or on-chain DAO parameters.
+- Governed by votes from NFT holders.
+
+#### 🔹 C. **Trade Engine**
+- A **service** or **contract** that:
+  - Executes the orders created by the agent.
+  - Manages position sizing, gas fees, slippage.
+- Can be fully on-chain (via smart contracts), or hybrid (AI logic off-chain, engine on-chain).
+
+> 🔐 Access to Trade Engine is **only granted to the agent** (enforced via wallet or contract permissions).
+
+---
+
+## ✅ Realistic Architecture for MVP
+
+| Layer | Tech |
+|-------|------|
+| **Governance** | OpenZeppelin ERC-721 + DAO framework |
+| **AI Agent** | Python (FinRL or Hummingbot strategy) |
+| **Trade Engine** | Python Web3 scripts + Smart Contracts (Vault + Router) |
+| **Execution** | Uniswap v3 or Balancer |
+| **Distribution** | ProfitDistributor smart contract |
+
+---
+
+## 📦 Trade Flow Sequence
+
+1. **User mints NFTs** → funds added to vault.
+2. **Agent config** is set by NFT governance (e.g. trade WETH/USDC).
+3. **AI Agent** (Python process) runs every X minutes:
+   - Scans data.
+   - Generates trade signal.
+4. **Trade Engine** receives the signal:
+   - Builds tx using Web3.
+   - Executes trade on Uniswap.
+   - Logs tx + profit.
+5. **Profit** is periodically sent to ProfitDistributor.
+6. **NFT holders** claim earnings via smart contract.
+
+---
+
+## 🔐 Security Tips
+
+- Keep the Trade Engine address **controlled by multisig or timelocked upgrades**.
+- Store AI model parameters **off-chain**, but commit hash on-chain for verifiability.
+- Allow **emergency shutdown** via DAO vote if exploit detected.
+
+---
